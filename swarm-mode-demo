@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Creation des machine
+alias create-front-one='docker-machine create -d virtualbox front-one'
+alias create-front-two='docker-machine create -d virtualbox front-two'
+alias create-back-one='docker-machine create -d virtualbox back-one'
+alias create-back-two='docker-machine create -d virtualbox back-two'
+alias create-bdd-one='docker-machine create -d virtualbox bdd-one'
+alias create-bdd-two='docker-machine create -d virtualbox bdd-two'
+
+# Lister les machine
+alias dls='docker-machine ls'
+# Se connecter en ssh dans une machine ou lancer une commande via SSH
+alias dssh='docker-machine ssh $@'
+# Se connecter a front-one
+alias front-one='dssh front-one'
+# Se connecter à front-two
+alias front-two='dssh front-two'
+# Se connecter à back-one
+alias back-one='dssh back-one'
+# Se connecter à back-two
+alias back-two='dssh back-two'
+# Se connecter à bdd-one
+alias bdd-one='dssh bdd-one'
+# Se connecter à bdd-two
+alias bdd-two='dssh bdd-two'
+
+# Creation d'un cluster avec master sur front-one
+alias create-cluster='dssh front-one docker swarm init --listen-addr $(docker-machine ip front-one) --advertise-addr $(docker-machine ip front-one)'
+# Recupération du token de worker
+alias wtoken='export W_TOKEN=`dssh front-one docker swarm join-token worker -q`' 
+# Recupération du token de manager
+alias mtoken='export M_TOKEN=`dssh front-one docker swarm join-token manager -q`'
+
+# Associe le front-two en tant que worker
+alias join-front-two='dssh front-two docker swarm join --token $W_TOKEN --listen-addr $(docker-machine ip front-two) --advertise-addr $(docker-machine ip front-two) $(docker-machine ip front-one)'
+# Associe le back-two en tant que worker
+alias join-back-two='dssh back-two docker swarm join --token $W_TOKEN --listen-addr $(docker-machine ip back-two) --advertise-addr $(docker-machine ip back-two) $(docker-machine ip front-one)'
+# Associe le bdd-two en tant que worker
+alias join-bdd-two='dssh bdd-two docker swarm join --token $W_TOKEN --listen-addr $(docker-machine ip bdd-two) --advertise-addr $(docker-machine ip bdd-two) $(docker-machine ip front-one)'
+
+# Associe le back-one en tant que manager
+alias join-back-one='dssh back-one docker swarm join --token $M_TOKEN --listen-addr $(docker-machine ip back-one) --advertise-addr $(docker-machine ip back-one) $(docker-machine ip front-one)'
+# Associe le bdd-one en tant que manager
+alias join-bdd-one='dssh bdd-one docker swarm join --token $M_TOKEN --listen-addr $(docker-machine ip bdd-one) --advertise-addr $(docker-machine ip bdd-one) $(docker-machine ip front-one)'
+
+alias label-front-one='dssh front-one docker node update --label-add tier=front front-one'
+alias label-front-two='dssh front-one docker node update --label-add tier=front front-two'
+
+alias label-back-one='dssh front-one docker node update --label-add tier=back back-one'
+alias label-back-two='dssh front-one docker node update --label-add tier=back back-two'
+
+alias label-bdd-one='dssh front-one docker node update --label-add tier=bdd bdd-one'
+alias label-bdd-two='dssh front-one docker node update --label-add tier=bdd bdd-two'
+
+# Creation d'un cluster guestbook
+alias create-network='docker network create -d overlay guestbook'
+
+# Lancer le service master redis
+alias deploy_master_redis='docker service create --network guestbook --name redis-master --replicas 1 --constraint "node.labels.tier == bdd" redis:3-alpine'
+# Lancer les slave redis
+alias deploy_slave_redis='docker service create --network guestbook --name redis-slave --constraint "node.labels.tier == bdd" --mode global redis:3-alpine --slaveof redis-master 6379'
+
+# Verification sur le noeud 1 que le redis est bien connecté au master
+alias verif_logs_redis_slave_one='dssh bdd-one docker logs -f $(dssh bdd-one docker ps -qf "name=redis-slave")'
+# Verification sur le noeud 2 que le redis est bien connecté au master
+alias verif_logs_redis_slave_two='dssh bdd-two docker logs -f $(dssh bdd-two docker ps -qf "name=redis-slave")'
+
+# Creation du service d'API qui va se connecter sur le master pour la lecture et les slaves pour l'ecriture
+# Le nom du service doit être guestbook-rest-server car il est utilise en dur par le service guestbook-front
+alias create_guestbook_api='docker service create --network guestbook --name guestbook-rest-server --mode global --constraint "node.labels.tier == back" looztra/guestbook-rest-service-server:v0.0.1 /app/run-java.sh --guestbook.backend.redis.read.vip=redis-slave --guestbook.backend.redis.write.vip=redis-master'
+# Verif du demarrage des APIs
+alias verif_logs_api_one='dssh back-one docker logs -f $(dssh back-one docker ps -qf "name=guestbook-rest-server")'
+alias verif_logs_api_two='dssh back-two docker logs -f $(dssh back-two docker ps -qf "name=guestbook-rest-server")'
+
+# Creation du frontend Angular
+alias create_guestbook_front='docker service create --publish 80:80 --network guestbook --name guestbook-front --mode global --constraint "node.labels.tier == front" -e "GUESTBOOK_FRONTEND_API_SERVER_ROOT_URL=http://guestbook-rest-server:8080" yyekhlef/guestbook-front:v0.0.1'
+alias verif_logs_front_one='dssh front-one docker logs -f $(dssh front-one docker ps -qf "name=guestbook-front")'
+alias verif_logs_front_two='dssh front-two docker logs -f $(dssh front-two docker ps -qf "name=guestbook-front")'
+
+# Rolling upgrade API
+alias upgrade_api='dssh front-one docker service update --update-parallelism 1 --update-delay 30s --image looztra/guestbook-rest-service-server:v0.0.5 guestbook-rest-server'
+
+# Rolling upgrade FRONT
+alias upgrade_front='dssh front-one docker service update --update-parallelism 1 --update-delay 30s --image yyekhlef/guestbook-front:v0.0.2 guestbook-front'
